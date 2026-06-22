@@ -115,12 +115,7 @@ def template_df() -> pd.DataFrame:
     ], columns=UPLOAD_COLUMNS)
 
 
-@st.cache_data(show_spinner=False)
-def generate_data(seed: int = 11, max_skus: int = 50) -> pd.DataFrame:
-    """Generate lightweight synthetic data for Streamlit Cloud.
-    50 SKU-store combinations x 52 weeks = 2,600 rows.
-    This avoids the earlier 30 lakh+ row memory crash.
-    """
+def generate_data(seed: int = 11) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
     dates = pd.date_range(end=pd.Timestamp.today().normalize(), periods=52, freq="W-SUN")
     base_price = {
@@ -133,81 +128,62 @@ def generate_data(seed: int = 11, max_skus: int = 50) -> pd.DataFrame:
     }
     gender_factor = {"Men": 1.05, "Women": 1.12, "Kids": 0.88}
     store_factor = {"Dhaka Flagship": 1.20, "Gulshan Store": 1.05, "Chattogram Store": 0.92, "Outlet Store": 0.78}
-    size_factor = {"35": .65, "36": .85, "37": 1.05, "38": 1.15, "39": 1.12, "40": 1.18, "41": 1.10, "42": 1.05, "43": .88, "44": .70, "NA": 1.0}
-
-    # Build product-store universe, then sample it. Do not generate full Cartesian product.
-    universe = []
-    for store in STORES:
-        for line in LINES:
+    size_factor = {"35": .65, "36": .85, "37": 1.05, "38": 1.15, "39": 1.12, "40": 1.18, "41": 1.10, "42": 1.05, "43": .88, "44": .70}
+    rows = []
+    for store in STORES[:2]:
+        for line in LINES[:4]:
+            line_factor = rng.uniform(.85, 1.20)
             for gender in GENDERS:
                 for category in CATEGORIES:
-                    usable_sizes = ["NA"] if category == "Bags" else SIZES
-                    # Keep only a practical color-size spread per category.
-                    sampled_colours = rng.choice(COLORS, size=min(4, len(COLORS)), replace=False)
-                    sampled_sizes = rng.choice(usable_sizes, size=min(4, len(usable_sizes)), replace=False)
-                    for colour in sampled_colours:
-                        for size in sampled_sizes:
-                            universe.append((store, line, gender, category, colour, size))
-
-    chosen_idx = rng.choice(len(universe), size=min(max_skus, len(universe)), replace=False)
-    chosen = [universe[i] for i in chosen_idx]
-
-    rows = []
-    colour_map = {"Black":1.30,"Brown":1.08,"Tan":1.00,"Navy":.95,"White":.98,"Beige":.88,"Red":.75,"Pink":.78,"Blue":.93,"Grey":.90}
-
-    for store, line, gender, category, colour, size in chosen:
-        line_factor = rng.uniform(.85, 1.20)
-        colour_factor = colour_map[colour]
-        sku = f"{line[:3].upper()}-{category[:3].upper()}-{gender[:1]}-{colour[:3].upper()}-{size}"
-        style = f"{gender} {category}"
-        price = base_price[category] * rng.uniform(.92, 1.14)
-        cost = price * rng.uniform(.35, .48)
-        stock = int(rng.integers(8, 45))
-        age = int(rng.integers(14, 210))
-        season_type = rng.choice(["Core", "Fashion", "Carryover", "Clearance"], p=[.45,.25,.22,.08])
-        ly_units_base = max(0, int(3.5 * cat_velocity[category] * gender_factor[gender] * line_factor * colour_factor * store_factor[store]))
-
-        for dt in dates:
-            month_factor = 1.12 if dt.month in [3,4,5,8,9,10] else .92
-            md = float(rng.choice([0, .10, .15, .20, .30, .40], p=[.40,.18,.16,.12,.09,.05]))
-            demand_mu = 2.8 * cat_velocity[category] * gender_factor[gender] * line_factor * colour_factor * store_factor[store] * month_factor
-            demand_mu *= size_factor.get(size, 1.0)
-            if season_type == "Clearance":
-                demand_mu *= .65
-            if md >= .20:
-                demand_mu *= 1 + md * 1.3
-            age_drag = max(.60, 1 - age / 520)
-            sales = min(stock, int(rng.poisson(max(.1, demand_mu * age_drag))))
-            receipts = int(rng.integers(0, 12)) if stock < 8 else int(rng.integers(0, 4))
-            opening = stock
-            closing = max(0, opening + receipts - sales)
-            realized = price * (1 - md)
-            display_cap = 2 if category != "Bags" else 1
-            display_stock = int(min(closing, display_cap, max(0, rng.integers(0, display_cap + 1))))
-            margin_pct = (realized - cost) / max(realized, 1)
-            rows.append({
-                "date": dt.date(), "store": store, "product_line": line, "gender": gender,
-                "category": category, "style": style, "colour": colour, "size": size, "sku": sku,
-                "opening_stock_units": opening, "receipts_units": receipts, "sales_units": sales,
-                "closing_stock_units": closing, "display_capacity_units": display_cap, "display_stock_units": display_stock,
-                "net_sales_value": round(sales * realized, 2), "full_price": round(price, 2),
-                "avg_realized_price": round(realized, 2), "cost_per_unit": round(cost, 2),
-                "gross_margin_pct": round(margin_pct, 3), "markdown_pct": md, "age_days": age,
-                "season_type": season_type, "last_year_sales_units": ly_units_base,
-            })
-            stock = closing
-            age += 7
-
-    df = pd.DataFrame(rows)
-    # Reduce memory footprint on Streamlit Cloud.
-    for col in ["store", "product_line", "gender", "category", "style", "colour", "size", "sku", "season_type"]:
-        df[col] = df[col].astype("category")
-    return df
+                    for colour in COLORS[:6]:
+                        colour_factor = {"Black":1.30,"Brown":1.08,"Tan":1.00,"Navy":.95,"White":.98,"Beige":.88,"Red":.75,"Pink":.78,"Blue":.93,"Grey":.90}[colour]
+                        # Use fewer sizes for bags to keep data realistic
+                        usable_sizes = ["NA"] if category == "Bags" else SIZES[2:8]
+                        for size in usable_sizes:
+                            sku = f"{line[:3].upper()}-{category[:3].upper()}-{gender[:1]}-{colour[:3].upper()}-{size}"
+                            style = f"{gender} {category}"
+                            price = base_price[category] * rng.uniform(.92, 1.14)
+                            cost = price * rng.uniform(.35, .48)
+                            stock = int(rng.integers(8, 45))
+                            age = int(rng.integers(14, 210))
+                            season_type = rng.choice(["Core", "Fashion", "Carryover", "Clearance"], p=[.45,.25,.22,.08])
+                            ly_units_base = max(0, int(3.5 * cat_velocity[category] * gender_factor[gender] * line_factor * colour_factor * store_factor[store]))
+                            for dt in dates:
+                                month_factor = 1.12 if dt.month in [3,4,5,8,9,10] else .92
+                                md = float(rng.choice([0, .10, .15, .20, .30, .40], p=[.40,.18,.16,.12,.09,.05]))
+                                demand_mu = 2.8 * cat_velocity[category] * gender_factor[gender] * line_factor * colour_factor * store_factor[store] * month_factor
+                                if category != "Bags":
+                                    demand_mu *= size_factor[size]
+                                if season_type == "Clearance":
+                                    demand_mu *= .65
+                                if md >= .20:
+                                    demand_mu *= 1 + md * 1.3
+                                age_drag = max(.60, 1 - age / 520)
+                                sales = min(stock, int(rng.poisson(max(.1, demand_mu * age_drag))))
+                                receipts = int(rng.integers(0, 12)) if stock < 8 else int(rng.integers(0, 4))
+                                opening = stock
+                                closing = max(0, opening + receipts - sales)
+                                realized = price * (1 - md)
+                                display_cap = 2 if category != "Bags" else 1
+                                display_stock = int(min(closing, display_cap, max(0, rng.integers(0, display_cap + 1))))
+                                margin_pct = (realized - cost) / max(realized, 1)
+                                rows.append({
+                                    "date": dt.date(), "store": store, "product_line": line, "gender": gender,
+                                    "category": category, "style": style, "colour": colour, "size": size, "sku": sku,
+                                    "opening_stock_units": opening, "receipts_units": receipts, "sales_units": sales,
+                                    "closing_stock_units": closing, "display_capacity_units": display_cap, "display_stock_units": display_stock,
+                                    "net_sales_value": round(sales * realized, 2), "full_price": round(price, 2),
+                                    "avg_realized_price": round(realized, 2), "cost_per_unit": round(cost, 2),
+                                    "gross_margin_pct": round(margin_pct, 3), "markdown_pct": md, "age_days": age,
+                                    "season_type": season_type, "last_year_sales_units": ly_units_base,
+                                })
+                                stock = closing
+                                age += 7
+    return pd.DataFrame(rows)
 
 # -----------------------------
 # Feature engineering and agent
 # -----------------------------
-@st.cache_data(show_spinner=False)
 def prepare(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["date"] = pd.to_datetime(out["date"])
@@ -229,11 +205,10 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-@st.cache_data(show_spinner=False)
 def latest_sku_view(df: pd.DataFrame) -> pd.DataFrame:
     group_cols = ["store", "product_line", "gender", "category", "style", "colour", "size", "sku", "season_type"]
-    g = df.sort_values("date").groupby(group_cols, as_index=False, observed=True).tail(12)
-    agg = g.groupby(group_cols, as_index=False, observed=True).agg(
+    g = df.sort_values("date").groupby(group_cols, as_index=False).tail(12)
+    agg = g.groupby(group_cols, as_index=False).agg(
         weekly_sales_units=("sales_units", "mean"),
         last_12w_units=("sales_units", "sum"),
         net_sales_12w=("net_sales_value", "sum"),
@@ -426,7 +401,7 @@ def draw_wall(planogram: pd.DataFrame, legend: pd.DataFrame):
 
 
 def kpis(df: pd.DataFrame, reco: pd.DataFrame) -> dict:
-    latest = df.sort_values("date").groupby("sku", as_index=False, observed=True).tail(12)
+    latest = df.sort_values("date").groupby("sku", as_index=False).tail(12)
     monthly_sales = latest["net_sales_value"].sum() / 3
     sales_sqft = monthly_sales / (WALL_WIDTH_FT * MERCH_HEIGHT_FT)
     gross_margin = latest["gross_margin_value"].sum()
@@ -472,17 +447,14 @@ with st.sidebar:
     store_filter = st.selectbox("Store", ["All"] + STORES, index=0)
     category_filter = st.selectbox("Category", ["All"] + CATEGORIES, index=0)
     gender_filter = st.selectbox("Gender", ["All"] + GENDERS, index=0)
-    wall_width_ft = 15
-st.number_input("Wall width ft", value=wall_width_ft, disabled=True)
-wall_height_ft = 8
-st.number_input("Wall height ft", value=wall_height_ft, disabled=True)
-merch_height_ft = 6
-st.number_input("Merchandising height ft", value=merch_height_ft, disabled=True)
-st.divider()
-st.markdown("### LOCAL AI")
-use_ollama = st.checkbox("Use Ollama explanation", value=False)
-ollama_url = st.text_input("Ollama URL", "http://localhost:11434")
-ollama_model = st.text_input("Model", "llama3.1:8b")
+    st.number_input("Wall width ft", value=WALL_WIDTH_FT, disabled=True)
+    st.number_input("Wall height ft", value=WALL_HEIGHT_FT, disabled=True)
+    st.number_input("Merchandising height ft", value=MERCH_HEIGHT_FT, disabled=True)
+    st.divider()
+    st.markdown("### LOCAL AI")
+    use_ollama = st.checkbox("Use Ollama explanation", value=False)
+    ollama_url = st.text_input("Ollama URL", "http://localhost:11434")
+    ollama_model = st.text_input("Model", "llama3.1:8b")
 
 st.markdown('<div class="hero-title">👟 ApexSpace Pro <span style="font-size:16px;color:#999;">v2 · Explainable AI Edition</span></div>', unsafe_allow_html=True)
 st.markdown(f'<div class="hero-sub">Apex footwear · Multi-store wall planner · 15 ft x 8 ft wall · merchandising till 6 ft · {date.today().strftime("%d %b %Y")}</div>', unsafe_allow_html=True)
@@ -527,25 +499,26 @@ with tab_dashboard:
     col_a, col_b = st.columns(2)
     with col_a:
         st.markdown("#### Monthly sales by category")
-        chart = raw.groupby("category", as_index=False, observed=True)["net_sales_value"].sum().sort_values("net_sales_value", ascending=False)
-        fig, ax = plt.subplots(figsize=(10, 4))
-        ax.bar(chart["category"], chart["net_sales_value"])
-        ax.set_xlabel("Category")  
-        ax.set_ylabel("Net Sales Value")
-        ax.set_title("Category Sales")
-        ax.tick_params(axis="x", rotation=45)
-        st.pyplot(fig, use_container_width=True)
+        chart = raw.groupby("category", as_index=False)["net_sales_value"].sum().sort_values("net_sales_value", ascending=False)
+        fig_sales, ax_sales = plt.subplots(figsize=(10, 4))
+        ax_sales.bar(chart["category"], chart["net_sales_value"])
+        ax_sales.set_xlabel("Category")
+        ax_sales.set_ylabel("Net Sales Value")
+        ax_sales.set_title("Monthly Sales by Category")
+        ax_sales.tick_params(axis="x", rotation=45)
+        st.pyplot(fig_sales, use_container_width=True)
     with col_b:
         st.markdown("#### GMROI vs category")
-        gm = raw.groupby("category", as_index=False, observed=True).agg(gross_margin=("gross_margin_value","sum"), inv=("inventory_cost","mean"))
+        gm = raw.groupby("category", as_index=False).agg(gross_margin=("gross_margin_value","sum"), inv=("inventory_cost","mean"))
         gm["gmroi"] = gm["gross_margin"] / gm["inv"].clip(lower=1)
-        fig2, ax2 = plt.subplots(figsize=(10,4))
-        ax2.bar(gm["category"], gm["gmroi"])
-        ax2.set_xlabel("Category")
-        ax2.set_ylabel("GMROI")
-        ax2.set_title("GMROI by Category")
-        ax2.tick_params(axis="x", rotation=45)
-        st.pyplot(fig2, use_container_width=True)
+        fig_gm, ax_gm = plt.subplots(figsize=(10, 4))
+        ax_gm.bar(gm["category"], gm["gmroi"])
+        ax_gm.axhline(BENCHMARKS["gmroi_target"], linestyle="--", linewidth=1)
+        ax_gm.set_xlabel("Category")
+        ax_gm.set_ylabel("GMROI")
+        ax_gm.set_title("GMROI vs Category")
+        ax_gm.tick_params(axis="x", rotation=45)
+        st.pyplot(fig_gm, use_container_width=True)
 
     st.markdown("#### What changed")
     st.markdown("""
@@ -603,25 +576,69 @@ with tab_data:
 
 with tab_schedule:
     st.markdown('<div class="section-title">🗓️ Schedule</div>', unsafe_allow_html=True)
-    st.write("Use the schedule tab to decide how frequently the wall should refresh by product type.")
-    schedule = pd.DataFrame([
-        {"Product type": "New launch / campaign footwear", "Refresh": "Daily", "Reason": "Early sales signal decides visibility fast"},
-        {"Product type": "Core sneakers and sandals", "Refresh": "Weekly", "Reason": "Enough movement to update facings and levels"},
-        {"Product type": "Formal shoes", "Refresh": "Weekly / Fortnightly", "Reason": "Slower demand cycle"},
-        {"Product type": "School shoes", "Refresh": "Daily during back-to-school", "Reason": "Seasonal stock-out risk"},
-        {"Product type": "Aged / clearance stock", "Refresh": "Weekly", "Reason": "Transfer or markdown decision"},
-        {"Product type": "Bags", "Refresh": "Monthly", "Reason": "Lower velocity, less wall reset frequency"},
-    ])
-    st.dataframe(schedule, use_container_width=True)
-    st.markdown("#### Suggested automation")
-    st.code(textwrap.dedent("""
-    # Run manually
-    uv run streamlit run app.py
+    st.write("Select when ApexSpace Pro should refresh the planogram. In production, this setting would trigger the data pipeline, rebuild the allocation, and send a new execution file to stores.")
 
-    # Production scheduler idea
-    # Daily: ingest POS + inventory + display stock
-    # Weekly: regenerate wall allocation and planogram
-    # Monthly: review category benchmarks and range rationalisation
+    s1, s2, s3 = st.columns(3)
+    with s1:
+        refresh_frequency = st.selectbox("Refresh frequency", ["Daily", "Weekly", "Monthly", "Event based", "Manual"], index=1)
+    with s2:
+        refresh_scope = st.selectbox("Refresh scope", ["Full wall", "Only OOS/OOD SKUs", "Promo SKUs", "New launch SKUs", "Aged stock only"], index=0)
+    with s3:
+        approval_mode = st.selectbox("Approval mode", ["Auto publish", "Central VM approval", "Category manager approval"], index=1)
+
+    if refresh_frequency == "Daily":
+        refresh_time = st.time_input("Daily refresh time")
+        next_refresh_text = f"Every day at {refresh_time.strftime('%I:%M %p')}"
+    elif refresh_frequency == "Weekly":
+        refresh_day = st.selectbox("Weekly refresh day", ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"], index=0)
+        refresh_time = st.time_input("Weekly refresh time")
+        next_refresh_text = f"Every {refresh_day} at {refresh_time.strftime('%I:%M %p')}"
+    elif refresh_frequency == "Monthly":
+        refresh_date = st.slider("Monthly refresh date", 1, 28, 1)
+        refresh_time = st.time_input("Monthly refresh time")
+        next_refresh_text = f"Every month on day {refresh_date} at {refresh_time.strftime('%I:%M %p')}"
+    elif refresh_frequency == "Event based":
+        trigger = st.selectbox("Trigger condition", ["OOS SKUs > 5", "OOD SKUs > 5", "GMROI drops below target", "Promo starts", "New collection launch", "Stock ageing > 90 days"])
+        next_refresh_text = f"Refresh automatically when: {trigger}"
+    else:
+        next_refresh_text = "Manual refresh only"
+
+    st.success(f"Schedule configured: {next_refresh_text}")
+
+    st.markdown("#### Current schedule summary")
+    st.dataframe(pd.DataFrame([
+        {"Setting": "Frequency", "Value": refresh_frequency},
+        {"Setting": "Scope", "Value": refresh_scope},
+        {"Setting": "Approval", "Value": approval_mode},
+        {"Setting": "Next refresh rule", "Value": next_refresh_text},
+        {"Setting": "Data inputs", "Value": "Sales, stock, display stock, GMROI, OOS, OOD, weeks cover, age"},
+        {"Setting": "Output", "Value": "New allocation table, wall planogram, SKU legend, store execution file"},
+    ]), use_container_width=True, hide_index=True)
+
+    st.markdown("#### Recommended refresh rules by product type")
+    schedule = pd.DataFrame([
+        {"Product type": "New launch / campaign footwear", "Recommended refresh": "Daily", "Why": "Early sales signal decides visibility fast"},
+        {"Product type": "Core sneakers and sandals", "Recommended refresh": "Weekly", "Why": "Enough movement to update facings and levels"},
+        {"Product type": "Formal shoes", "Recommended refresh": "Weekly / Fortnightly", "Why": "Slower demand cycle"},
+        {"Product type": "School shoes", "Recommended refresh": "Daily during back-to-school", "Why": "Seasonal stock-out risk"},
+        {"Product type": "Aged / clearance stock", "Recommended refresh": "Weekly", "Why": "Transfer or markdown decision"},
+        {"Product type": "Bags", "Recommended refresh": "Monthly", "Why": "Lower velocity, less wall reset frequency"},
+    ])
+    st.dataframe(schedule, use_container_width=True, hide_index=True)
+
+    st.markdown("#### Production scheduler logic")
+    st.code(textwrap.dedent(f"""
+    # Selected schedule
+    FREQUENCY = "{refresh_frequency}"
+    SCOPE = "{refresh_scope}"
+    APPROVAL_MODE = "{approval_mode}"
+
+    # Production flow
+    # 1. Ingest POS sales, inventory, display stock and ageing data
+    # 2. Recalculate sales/sqft, GMROI, weeks cover, OOS and OOD
+    # 3. Re-score SKUs and regenerate allocation
+    # 4. Build new 15 ft x 8 ft wall planogram, merchandising only till 6 ft
+    # 5. Send output for approval or auto-publish based on approval mode
     """))
 
 st.divider()
