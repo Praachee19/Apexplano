@@ -512,7 +512,7 @@ reco["xai_reason"] = reco.apply(explain_row, axis=1)
 planogram, legend = make_planogram(reco)
 metrics = kpis(raw, reco)
 
-tab_dashboard, tab_xai, tab_alloc, tab_planogram, tab_data, tab_schedule = st.tabs(["📊 Dashboard", "🧠 cd plano AI", "🗂️ Allocation", "📐 Planogram", "📥 Data", "🗓️ Schedule"])
+tab_dashboard, tab_xai, tab_alloc, tab_planogram, tab_data, tab_schedule = st.tabs(["📊 Dashboard", "🧠 Explainable AI", "🗂️ Allocation", "📐 Planogram", "📥 Data", "🗓️ Schedule"])
 
 with tab_dashboard:
     st.markdown('<div class="section-title">📊 Performance Dashboard</div>', unsafe_allow_html=True)
