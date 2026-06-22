@@ -295,63 +295,182 @@ def explain_row(r) -> str:
 
 
 def make_planogram(reco: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Create a 15 ft x 8 ft wall planogram that uses all 5 bays.
+
+    Fix made:
+    Earlier logic picked the top 90 SKUs overall. If the highest scoring SKUs were
+    mostly Formal/Casual/Sneakers, Bay 4 and Bay 5 stayed empty. This version first
+    reserves products bay-wise, then fills remaining capacity by priority. Result:
+    every bay gets merchandised.
+    """
     wall_width_in = WALL_WIDTH_FT * 12
     bay_width_in = wall_width_in / BAY_COUNT
-    sku_reco = reco.copy().head(90)
-    # Category bay strategy based on Apex style wall display
-    category_bay = {
-        "Formal Shoes": 1,
-        "Casual Shoes": 2,
-        "Sneakers": 3,
-        "Sandals": 4,
-        "Slippers": 5,
-        "School Shoes": 1,
-        "Bags": 5,
+    slot_w = 9
+
+    # Merchandising levels only till 6 ft. Header area remains non-merchandising.
+    level_y = {
+        "Bottom": 6,
+        "Lower": 18,
+        "Mid": 30,
+        "Upper Mid": 42,
+        "Eye Level": 54,
+        "Top Merch": 66,
     }
-    level_y = {"Bottom": 6, "Lower": 18, "Mid": 30, "Upper Mid": 42, "Eye Level": 54, "Top Merch": 66}
+
+    # Apex footwear wall zoning. Each bay has a primary role and a secondary fallback.
+    bay_strategy = {
+        1: {
+            "name": "Formal + School",
+            "categories": ["Formal Shoes", "School Shoes"],
+            "levels": ["Upper Mid", "Eye Level", "Mid", "Lower", "Bottom", "Top Merch"],
+        },
+        2: {
+            "name": "Casual",
+            "categories": ["Casual Shoes"],
+            "levels": ["Eye Level", "Upper Mid", "Mid", "Lower", "Bottom", "Top Merch"],
+        },
+        3: {
+            "name": "Sneakers",
+            "categories": ["Sneakers"],
+            "levels": ["Eye Level", "Upper Mid", "Mid", "Lower", "Bottom", "Top Merch"],
+        },
+        4: {
+            "name": "Sandals + Slippers",
+            "categories": ["Sandals", "Slippers"],
+            "levels": ["Eye Level", "Upper Mid", "Mid", "Lower", "Bottom", "Top Merch"],
+        },
+        5: {
+            "name": "Women/Kids + Bags",
+            "categories": ["Sandals", "Slippers", "Bags", "Casual Shoes", "Sneakers"],
+            "levels": ["Eye Level", "Upper Mid", "Mid", "Lower", "Bottom", "Top Merch"],
+        },
+    }
+
+    # Number of slots that fit inside one bay across all merchandising rows.
+    slots_per_level_per_bay = int(bay_width_in // slot_w)
+    max_slots_per_bay = slots_per_level_per_bay * len(LEVELS)
+    target_slots_per_bay = max(18, min(max_slots_per_bay, 30))
+
+    base = reco.copy().sort_values("priority_score", ascending=False).reset_index(drop=True)
+    if base.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
     slots = []
-    slot_w = 9  # 20 products visible per row across 15 ft
-    for _, r in sku_reco.iterrows():
-        bay = category_bay.get(r.category, 3)
-        preferred_level = r.recommended_level
-        count = int(max(1, min(3, r.recommended_display_units)))
-        for _ in range(count):
+    used_sku_bay = set()
+
+    def add_sku_rows(row, bay, level, facings):
+        for _ in range(int(max(1, facings))):
             slots.append({
-                "sku": r.sku, "category": r.category, "product_line": r.product_line, "gender": r.gender,
-                "colour": r.colour, "size": r.size, "bay": bay, "level": preferred_level,
-                "priority_score": r.priority_score, "weekly_sales_units": r.weekly_sales_units,
-                "gmroi": r.gmroi, "action": r.recommended_action,
+                "sku": row.sku,
+                "category": row.category,
+                "product_line": row.product_line,
+                "gender": row.gender,
+                "colour": row.colour,
+                "size": row.size,
+                "bay": bay,
+                "level": level,
+                "priority_score": row.priority_score,
+                "weekly_sales_units": row.weekly_sales_units,
+                "gmroi": row.gmroi,
+                "action": row.recommended_action,
             })
-    plan = pd.DataFrame(slots).sort_values(["bay", "level", "priority_score"], ascending=[True, True, False]).reset_index(drop=True)
+
+    # 1. Reserve space bay-wise so every bay is filled.
+    for bay, strategy in bay_strategy.items():
+        bay_df = base[base["category"].isin(strategy["categories"])].copy()
+
+        # For Bay 5, prefer women/kids/bags when data has them.
+        if bay == 5 and "gender" in bay_df.columns:
+            preferred = bay_df[bay_df["gender"].isin(["Women", "Kids", "Unisex"])]
+            if not preferred.empty:
+                bay_df = preferred
+
+        # Fallback if category bucket is thin.
+        if bay_df.empty:
+            bay_df = base.copy()
+
+        bay_df = bay_df.sort_values("priority_score", ascending=False).drop_duplicates("sku")
+        bay_slots = 0
+        level_i = 0
+
+        for _, row in bay_df.iterrows():
+            if bay_slots >= target_slots_per_bay:
+                break
+            # Keep facing count readable and wall balanced.
+            facings = int(max(1, min(3, getattr(row, "recommended_display_units", 1))))
+            facings = min(facings, target_slots_per_bay - bay_slots)
+            level = strategy["levels"][level_i % len(strategy["levels"])]
+            add_sku_rows(row, bay, level, facings)
+            used_sku_bay.add((row.sku, bay))
+            bay_slots += facings
+            level_i += 1
+
+        # If still not enough, duplicate strongest SKUs for that bay as extra facings.
+        # This is realistic for footwear walls where hero styles repeat by colour/size.
+        if bay_slots < target_slots_per_bay and not bay_df.empty:
+            refill = bay_df.head(12).reset_index(drop=True)
+            j = 0
+            while bay_slots < target_slots_per_bay:
+                row = refill.iloc[j % len(refill)]
+                level = strategy["levels"][j % len(strategy["levels"])]
+                add_sku_rows(row, bay, level, 1)
+                bay_slots += 1
+                j += 1
+
+    plan = pd.DataFrame(slots)
     if plan.empty:
         return plan, pd.DataFrame()
+
+    # Sort so the planogram reads bay by bay, level by level, strongest first.
+    level_rank = {lvl: i for i, lvl in enumerate(["Top Merch", "Eye Level", "Upper Mid", "Mid", "Lower", "Bottom"])}
+    plan["level_rank"] = plan["level"].map(level_rank).fillna(99)
+    plan = plan.sort_values(["bay", "level_rank", "priority_score"], ascending=[True, True, False]).reset_index(drop=True)
 
     used = {}
     positions = []
     sku_codes = {}
     for i, sku in enumerate(plan["sku"].unique(), start=1):
         sku_codes[sku] = f"S{i:03d}"
+
     for _, r in plan.iterrows():
-        key = (int(r.bay), r.level)
+        bay = int(r.bay)
+        preferred_level = r.level
+        key = (bay, preferred_level)
         used.setdefault(key, 0)
-        x = (int(r.bay) - 1) * bay_width_in + used[key] * slot_w
-        if x + slot_w > int(r.bay) * bay_width_in:
-            # Try another level in same bay
+        x = (bay - 1) * bay_width_in + used[key] * slot_w
+
+        # If preferred row is full, try the other rows in the same bay before dropping.
+        if x + slot_w > bay * bay_width_in:
             placed = False
-            for lev in LEVELS:
-                key2 = (int(r.bay), lev)
+            bay_levels = bay_strategy.get(bay, {}).get("levels", LEVELS)
+            for lev in bay_levels:
+                key2 = (bay, lev)
                 used.setdefault(key2, 0)
-                x2 = (int(r.bay) - 1) * bay_width_in + used[key2] * slot_w
-                if x2 + slot_w <= int(r.bay) * bay_width_in:
-                    key = key2; x = x2; placed = True; break
+                x2 = (bay - 1) * bay_width_in + used[key2] * slot_w
+                if x2 + slot_w <= bay * bay_width_in:
+                    key = key2
+                    x = x2
+                    placed = True
+                    break
             if not placed:
                 continue
-        used[key] += 1
-        positions.append({**r.to_dict(), "sku_code": sku_codes[r.sku], "x_in": x, "y_in": level_y[key[1]], "w_in": slot_w, "h_in": 9})
-    planogram = pd.DataFrame(positions)
-    legend = planogram[["sku_code", "sku", "product_line", "gender", "category", "colour", "size", "bay", "level", "action", "weekly_sales_units", "gmroi"]].drop_duplicates("sku_code")
-    return planogram, legend
 
+        used[key] += 1
+        positions.append({
+            **r.to_dict(),
+            "sku_code": sku_codes[r.sku],
+            "x_in": x,
+            "y_in": level_y[key[1]],
+            "w_in": slot_w,
+            "h_in": 9,
+        })
+
+    planogram = pd.DataFrame(positions)
+    legend = planogram[[
+        "sku_code", "sku", "product_line", "gender", "category", "colour", "size",
+        "bay", "level", "action", "weekly_sales_units", "gmroi"
+    ]].drop_duplicates("sku_code")
+    return planogram, legend
 
 def draw_wall(planogram: pd.DataFrame, legend: pd.DataFrame):
     fig, ax = plt.subplots(figsize=(24, 12))
