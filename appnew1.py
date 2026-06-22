@@ -116,9 +116,9 @@ def template_df() -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def generate_data(seed: int = 11, max_skus: int = 120) -> pd.DataFrame:
+def generate_data(seed: int = 11, max_skus: int = 50) -> pd.DataFrame:
     """Generate lightweight synthetic data for Streamlit Cloud.
-    120 SKU-store combinations x 52 weeks = 6,240 rows.
+    50 SKU-store combinations x 52 weeks = 2,600 rows.
     This avoids the earlier 30 lakh+ row memory crash.
     """
     rng = np.random.default_rng(seed)
@@ -232,8 +232,8 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def latest_sku_view(df: pd.DataFrame) -> pd.DataFrame:
     group_cols = ["store", "product_line", "gender", "category", "style", "colour", "size", "sku", "season_type"]
-    g = df.sort_values("date").groupby(group_cols, as_index=False).tail(12)
-    agg = g.groupby(group_cols, as_index=False).agg(
+    g = df.sort_values("date").groupby(group_cols, as_index=False, observed=True).tail(12)
+    agg = g.groupby(group_cols, as_index=False, observed=True).agg(
         weekly_sales_units=("sales_units", "mean"),
         last_12w_units=("sales_units", "sum"),
         net_sales_12w=("net_sales_value", "sum"),
@@ -426,7 +426,7 @@ def draw_wall(planogram: pd.DataFrame, legend: pd.DataFrame):
 
 
 def kpis(df: pd.DataFrame, reco: pd.DataFrame) -> dict:
-    latest = df.sort_values("date").groupby("sku", as_index=False).tail(12)
+    latest = df.sort_values("date").groupby("sku", as_index=False, observed=True).tail(12)
     monthly_sales = latest["net_sales_value"].sum() / 3
     sales_sqft = monthly_sales / (WALL_WIDTH_FT * MERCH_HEIGHT_FT)
     gross_margin = latest["gross_margin_value"].sum()
@@ -527,7 +527,7 @@ with tab_dashboard:
     col_a, col_b = st.columns(2)
     with col_a:
         st.markdown("#### Monthly sales by category")
-        chart = raw.groupby("category", as_index=False)["net_sales_value"].sum().sort_values("net_sales_value", ascending=False)
+        chart = raw.groupby("category", as_index=False, observed=True)["net_sales_value"].sum().sort_values("net_sales_value", ascending=False)
         fig, ax = plt.subplots(figsize=(10, 4))
         ax.bar(chart["category"], chart["net_sales_value"])
         ax.set_xlabel("Category")  
@@ -537,7 +537,7 @@ with tab_dashboard:
         st.pyplot(fig, use_container_width=True)
     with col_b:
         st.markdown("#### GMROI vs category")
-        gm = raw.groupby("category", as_index=False).agg(gross_margin=("gross_margin_value","sum"), inv=("inventory_cost","mean"))
+        gm = raw.groupby("category", as_index=False, observed=True).agg(gross_margin=("gross_margin_value","sum"), inv=("inventory_cost","mean"))
         gm["gmroi"] = gm["gross_margin"] / gm["inv"].clip(lower=1)
         fig2, ax2 = plt.subplots(figsize=(10,4))
         ax2.bar(gm["category"], gm["gmroi"])
@@ -626,4 +626,3 @@ with tab_schedule:
 
 st.divider()
 st.caption("ApexSpace Pro. Synthetic model for retail planning demonstration. Replace with POS, ERP, WMS and store display data for production.")
-
