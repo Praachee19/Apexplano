@@ -115,7 +115,12 @@ def template_df() -> pd.DataFrame:
     ], columns=UPLOAD_COLUMNS)
 
 
-def generate_data(seed: int = 11) -> pd.DataFrame:
+@st.cache_data(show_spinner=False)
+def generate_data(seed: int = 11, max_skus: int = 120) -> pd.DataFrame:
+    """Generate lightweight synthetic data for Streamlit Cloud.
+    120 SKU-store combinations x 52 weeks = 6,240 rows.
+    This avoids the earlier 30 lakh+ row memory crash.
+    """
     rng = np.random.default_rng(seed)
     dates = pd.date_range(end=pd.Timestamp.today().normalize(), periods=52, freq="W-SUN")
     base_price = {
@@ -128,62 +133,81 @@ def generate_data(seed: int = 11) -> pd.DataFrame:
     }
     gender_factor = {"Men": 1.05, "Women": 1.12, "Kids": 0.88}
     store_factor = {"Dhaka Flagship": 1.20, "Gulshan Store": 1.05, "Chattogram Store": 0.92, "Outlet Store": 0.78}
-    size_factor = {"35": .65, "36": .85, "37": 1.05, "38": 1.15, "39": 1.12, "40": 1.18, "41": 1.10, "42": 1.05, "43": .88, "44": .70}
-    rows = []
+    size_factor = {"35": .65, "36": .85, "37": 1.05, "38": 1.15, "39": 1.12, "40": 1.18, "41": 1.10, "42": 1.05, "43": .88, "44": .70, "NA": 1.0}
+
+    # Build product-store universe, then sample it. Do not generate full Cartesian product.
+    universe = []
     for store in STORES:
         for line in LINES:
-            line_factor = rng.uniform(.85, 1.20)
             for gender in GENDERS:
                 for category in CATEGORIES:
-                    for colour in COLORS:
-                        colour_factor = {"Black":1.30,"Brown":1.08,"Tan":1.00,"Navy":.95,"White":.98,"Beige":.88,"Red":.75,"Pink":.78,"Blue":.93,"Grey":.90}[colour]
-                        # Use fewer sizes for bags to keep data realistic
-                        usable_sizes = ["NA"] if category == "Bags" else SIZES
-                        for size in usable_sizes:
-                            sku = f"{line[:3].upper()}-{category[:3].upper()}-{gender[:1]}-{colour[:3].upper()}-{size}"
-                            style = f"{gender} {category}"
-                            price = base_price[category] * rng.uniform(.92, 1.14)
-                            cost = price * rng.uniform(.35, .48)
-                            stock = int(rng.integers(8, 45))
-                            age = int(rng.integers(14, 210))
-                            season_type = rng.choice(["Core", "Fashion", "Carryover", "Clearance"], p=[.45,.25,.22,.08])
-                            ly_units_base = max(0, int(3.5 * cat_velocity[category] * gender_factor[gender] * line_factor * colour_factor * store_factor[store]))
-                            for dt in dates:
-                                month_factor = 1.12 if dt.month in [3,4,5,8,9,10] else .92
-                                md = float(rng.choice([0, .10, .15, .20, .30, .40], p=[.40,.18,.16,.12,.09,.05]))
-                                demand_mu = 2.8 * cat_velocity[category] * gender_factor[gender] * line_factor * colour_factor * store_factor[store] * month_factor
-                                if category != "Bags":
-                                    demand_mu *= size_factor[size]
-                                if season_type == "Clearance":
-                                    demand_mu *= .65
-                                if md >= .20:
-                                    demand_mu *= 1 + md * 1.3
-                                age_drag = max(.60, 1 - age / 520)
-                                sales = min(stock, int(rng.poisson(max(.1, demand_mu * age_drag))))
-                                receipts = int(rng.integers(0, 12)) if stock < 8 else int(rng.integers(0, 4))
-                                opening = stock
-                                closing = max(0, opening + receipts - sales)
-                                realized = price * (1 - md)
-                                display_cap = 2 if category != "Bags" else 1
-                                display_stock = int(min(closing, display_cap, max(0, rng.integers(0, display_cap + 1))))
-                                margin_pct = (realized - cost) / max(realized, 1)
-                                rows.append({
-                                    "date": dt.date(), "store": store, "product_line": line, "gender": gender,
-                                    "category": category, "style": style, "colour": colour, "size": size, "sku": sku,
-                                    "opening_stock_units": opening, "receipts_units": receipts, "sales_units": sales,
-                                    "closing_stock_units": closing, "display_capacity_units": display_cap, "display_stock_units": display_stock,
-                                    "net_sales_value": round(sales * realized, 2), "full_price": round(price, 2),
-                                    "avg_realized_price": round(realized, 2), "cost_per_unit": round(cost, 2),
-                                    "gross_margin_pct": round(margin_pct, 3), "markdown_pct": md, "age_days": age,
-                                    "season_type": season_type, "last_year_sales_units": ly_units_base,
-                                })
-                                stock = closing
-                                age += 7
-    return pd.DataFrame(rows)
+                    usable_sizes = ["NA"] if category == "Bags" else SIZES
+                    # Keep only a practical color-size spread per category.
+                    sampled_colours = rng.choice(COLORS, size=min(4, len(COLORS)), replace=False)
+                    sampled_sizes = rng.choice(usable_sizes, size=min(4, len(usable_sizes)), replace=False)
+                    for colour in sampled_colours:
+                        for size in sampled_sizes:
+                            universe.append((store, line, gender, category, colour, size))
+
+    chosen_idx = rng.choice(len(universe), size=min(max_skus, len(universe)), replace=False)
+    chosen = [universe[i] for i in chosen_idx]
+
+    rows = []
+    colour_map = {"Black":1.30,"Brown":1.08,"Tan":1.00,"Navy":.95,"White":.98,"Beige":.88,"Red":.75,"Pink":.78,"Blue":.93,"Grey":.90}
+
+    for store, line, gender, category, colour, size in chosen:
+        line_factor = rng.uniform(.85, 1.20)
+        colour_factor = colour_map[colour]
+        sku = f"{line[:3].upper()}-{category[:3].upper()}-{gender[:1]}-{colour[:3].upper()}-{size}"
+        style = f"{gender} {category}"
+        price = base_price[category] * rng.uniform(.92, 1.14)
+        cost = price * rng.uniform(.35, .48)
+        stock = int(rng.integers(8, 45))
+        age = int(rng.integers(14, 210))
+        season_type = rng.choice(["Core", "Fashion", "Carryover", "Clearance"], p=[.45,.25,.22,.08])
+        ly_units_base = max(0, int(3.5 * cat_velocity[category] * gender_factor[gender] * line_factor * colour_factor * store_factor[store]))
+
+        for dt in dates:
+            month_factor = 1.12 if dt.month in [3,4,5,8,9,10] else .92
+            md = float(rng.choice([0, .10, .15, .20, .30, .40], p=[.40,.18,.16,.12,.09,.05]))
+            demand_mu = 2.8 * cat_velocity[category] * gender_factor[gender] * line_factor * colour_factor * store_factor[store] * month_factor
+            demand_mu *= size_factor.get(size, 1.0)
+            if season_type == "Clearance":
+                demand_mu *= .65
+            if md >= .20:
+                demand_mu *= 1 + md * 1.3
+            age_drag = max(.60, 1 - age / 520)
+            sales = min(stock, int(rng.poisson(max(.1, demand_mu * age_drag))))
+            receipts = int(rng.integers(0, 12)) if stock < 8 else int(rng.integers(0, 4))
+            opening = stock
+            closing = max(0, opening + receipts - sales)
+            realized = price * (1 - md)
+            display_cap = 2 if category != "Bags" else 1
+            display_stock = int(min(closing, display_cap, max(0, rng.integers(0, display_cap + 1))))
+            margin_pct = (realized - cost) / max(realized, 1)
+            rows.append({
+                "date": dt.date(), "store": store, "product_line": line, "gender": gender,
+                "category": category, "style": style, "colour": colour, "size": size, "sku": sku,
+                "opening_stock_units": opening, "receipts_units": receipts, "sales_units": sales,
+                "closing_stock_units": closing, "display_capacity_units": display_cap, "display_stock_units": display_stock,
+                "net_sales_value": round(sales * realized, 2), "full_price": round(price, 2),
+                "avg_realized_price": round(realized, 2), "cost_per_unit": round(cost, 2),
+                "gross_margin_pct": round(margin_pct, 3), "markdown_pct": md, "age_days": age,
+                "season_type": season_type, "last_year_sales_units": ly_units_base,
+            })
+            stock = closing
+            age += 7
+
+    df = pd.DataFrame(rows)
+    # Reduce memory footprint on Streamlit Cloud.
+    for col in ["store", "product_line", "gender", "category", "style", "colour", "size", "sku", "season_type"]:
+        df[col] = df[col].astype("category")
+    return df
 
 # -----------------------------
 # Feature engineering and agent
 # -----------------------------
+@st.cache_data(show_spinner=False)
 def prepare(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["date"] = pd.to_datetime(out["date"])
@@ -205,6 +229,7 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+@st.cache_data(show_spinner=False)
 def latest_sku_view(df: pd.DataFrame) -> pd.DataFrame:
     group_cols = ["store", "product_line", "gender", "category", "style", "colour", "size", "sku", "season_type"]
     g = df.sort_values("date").groupby(group_cols, as_index=False).tail(12)
@@ -515,18 +540,15 @@ with tab_dashboard:
         gm = raw.groupby("category", as_index=False).agg(gross_margin=("gross_margin_value","sum"), inv=("inventory_cost","mean"))
         gm["gmroi"] = gm["gross_margin"] / gm["inv"].clip(lower=1)
         fig2, ax2 = plt.subplots(figsize=(10,4))
-
         ax2.bar(gm["category"], gm["gmroi"])
         ax2.set_xlabel("Category")
         ax2.set_ylabel("GMROI")
         ax2.set_title("GMROI by Category")
+        ax2.tick_params(axis="x", rotation=45)
+        st.pyplot(fig2, use_container_width=True)
 
-plt.xticks(rotation=45)
-
-st.pyplot(fig2, use_container_width=True)
-
-st.markdown("#### What changed")
-st.markdown("""
+    st.markdown("#### What changed")
+    st.markdown("""
     <div class="note">
     The agent prioritises high velocity and high GMROI footwear on eye and upper-mid levels, fixes out-of-display gaps, reduces space for slow aged stock, and keeps Apex wall execution centrally controlled but customized by store performance.
     </div>
@@ -604,3 +626,4 @@ with tab_schedule:
 
 st.divider()
 st.caption("ApexSpace Pro. Synthetic model for retail planning demonstration. Replace with POS, ERP, WMS and store display data for production.")
+
